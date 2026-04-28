@@ -7,7 +7,7 @@
 
 ## 🌐 デモ
 
-https://あなたのユーザー名.github.io/リポジトリ名/
+https://fudifudi.github.io/ponponstarter/
 
 ---
 
