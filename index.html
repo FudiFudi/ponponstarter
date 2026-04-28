@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PonPonStarter</title>
+<style>
+body { font-family: sans-serif; padding:20px; }
+button { margin:5px; }
+</style>
+</head>
+<body>
+
+<h2>🎵 PonPonStarter</h2>
+
+<input type="file" id="fileInput"><br><br>
+
+BPM:
+<input type="number" id="bpmInput" placeholder="未入力なら120"><br><br>
+
+微調整（秒）:
+<input type="range" id="offset" min="-0.75" max="0.75" step="0.01" value="0">
+<span id="offsetVal">0</span><br><br>
+
+<button onclick="process()">生成＆再生</button>
+<button onclick="stopAudio()">停止</button>
+<button onclick="download()">ダウンロード</button>
+
+<p id="status">待機中</p>
+
+<script>
+let ctx = new AudioContext();
+let currentSource = null;
+let outputBuffer = null;
+
+const bpmInput = document.getElementById("bpmInput");
+const offsetSlider = document.getElementById("offset");
+const offsetVal = document.getElementById("offsetVal");
+const statusText = document.getElementById("status");
+
+offsetSlider.oninput = () => {
+  offsetVal.innerText = offsetSlider.value;
+};
+
+async function process(){
+  stopAudio();
+  statusText.innerText = "処理中...";
+
+  try {
+    const file = document.getElementById("fileInput").files[0];
+    if(!file) return alert("音源選んで");
+
+    if (file.size > 50 * 1024 * 1024) {
+      return alert("50MB以下にしてね");
+    }
+
+    if (ctx.state === "closed") {
+      ctx = new AudioContext();
+    }
+
+    const bpm = parseFloat(bpmInput.value) || 120;
+    const offsetSec = parseFloat(offsetSlider.value);
+
+    const music = await ctx.decodeAudioData(await file.arrayBuffer());
+
+    const res = await fetch("drum_3counts.wav");
+    if(!res.ok) throw new Error("drum_3counts.wav が見つからない");
+    const drum = await ctx.decodeAudioData(await res.arrayBuffer());
+
+    const ratio = bpm / 120;
+    const drumAdj = stretchBuffer(drum, ratio);
+
+    const beatSamples = ctx.sampleRate * 60 / bpm;
+    const musicStart = Math.floor(beatSamples * 3 + offsetSec * ctx.sampleRate);
+
+    const totalLength = musicStart + music.length;
+    const out = ctx.createBuffer(2, totalLength, ctx.sampleRate);
+
+    for(let ch=0; ch<2; ch++){
+      const o = out.getChannelData(ch);
+      const d = drumAdj.getChannelData(Math.min(ch, drumAdj.numberOfChannels-1));
+      const m = music.getChannelData(Math.min(ch, music.numberOfChannels-1));
+
+      o.set(d, 0);
+      o.set(m, musicStart);
+    }
+
+    outputBuffer = out;
+
+    currentSource = ctx.createBufferSource();
+    currentSource.buffer = out;
+    currentSource.connect(ctx.destination);
+    currentSource.start();
+
+    currentSource.onended = () => {
+      statusText.innerText = "再生終了";
+    };
+
+    statusText.innerText = "再生中";
+
+  } catch(e) {
+    console.error(e);
+    alert(e.message);
+  }
+}
+
+function stopAudio(){
+  if(currentSource){
+    try { currentSource.stop(); } catch {}
+    currentSource = null;
+  }
+  statusText.innerText = "停止中";
+}
+
+function download(){
+  if(!outputBuffer) return alert("先に生成して");
+
+  const blob = new Blob([bufferToWav(outputBuffer)], {type:"audio/wav"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "output.wav";
+  a.click();
+}
+
+function stretchBuffer(buffer, rate){
+  const len = Math.floor(buffer.length / rate);
+  const newBuf = ctx.createBuffer(buffer.numberOfChannels, len, buffer.sampleRate);
+
+  for(let ch=0; ch<buffer.numberOfChannels; ch++){
+    const input = buffer.getChannelData(ch);
+    const out = newBuf.getChannelData(ch);
+
+    for(let i=0;i<len;i++){
+      const idx=i*rate;
+      const i0=Math.floor(idx);
+      const i1=Math.min(i0+1,input.length-1);
+      const f=idx-i0;
+      out[i]=input[i0]*(1-f)+input[i1]*f;
+    }
+  }
+  return newBuf;
+}
+
+function bufferToWav(buffer){
+  const num=buffer.numberOfChannels;
+  const len=buffer.length*num*2+44;
+  const arr=new ArrayBuffer(len);
+  const view=new DataView(arr);
+  let off=0;
+
+  function w(s){for(let i=0;i<s.length;i++)view.setUint8(off++,s.charCodeAt(i));}
+
+  w("RIFF"); view.setUint32(off,36+buffer.length*2,true); off+=4;
+  w("WAVEfmt "); view.setUint32(off,16,true); off+=4;
+  view.setUint16(off,1,true); off+=2;
+  view.setUint16(off,num,true); off+=2;
+  view.setUint32(off,buffer.sampleRate,true); off+=4;
+  view.setUint32(off,buffer.sampleRate*num*2,true); off+=4;
+  view.setUint16(off,num*2,true); off+=2;
+  view.setUint16(off,16,true); off+=2;
+  w("data"); view.setUint32(off,buffer.length*num*2,true); off+=4;
+
+  for(let i=0;i<buffer.length;i++){
+    for(let ch=0;ch<num;ch++){
+      let sample=buffer.getChannelData(ch)[i];
+      sample=Math.max(-1,Math.min(1,sample));
+      view.setInt16(off,sample*0x7fff,true);
+      off+=2;
+    }
+  }
+  return arr;
+}
+</script>
+
+</body>
+</html>
